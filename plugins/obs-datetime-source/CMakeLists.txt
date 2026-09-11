@@ -5,6 +5,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
+# The plugin is dlopen()'d by a host OBS process that has already loaded its
+# own libobs by soname; it must resolve against that instance, not risk
+# mapping a second, mismatched copy via an rpath baked in at our build time.
+set(CMAKE_SKIP_BUILD_RPATH TRUE)
+set(CMAKE_SKIP_INSTALL_RPATH TRUE)
+
 # --- libobs ------------------------------------------------------------
 # If OBS Studio was installed system-wide with CMake package config exported
 # (e.g. built with `cmake --install`), this picks it up automatically.
