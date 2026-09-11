@@ -38,9 +38,25 @@ if(NOT TARGET OBS::libobs)
         set(LIBOBS_CONFIG_INCLUDE_DIR "${_libobs_lib_dir}/../config")
     endif()
     add_library(OBS::libobs SHARED IMPORTED)
-    set_target_properties(OBS::libobs PROPERTIES
-        IMPORTED_LOCATION "${LIBOBS_LIB}"
-        INTERFACE_INCLUDE_DIRECTORIES "${LIBOBS_INCLUDE_DIR};${LIBOBS_CONFIG_INCLUDE_DIR}")
+    if(WIN32)
+        # On Windows, LIBOBS_LIB is the import library (obs.lib); the linker
+        # needs that as IMPORTED_IMPLIB, while IMPORTED_LOCATION is the
+        # actual runtime obs.dll (defaults to the same directory, matching
+        # a normal obs-studio build layout; override with -DLIBOBS_DLL).
+        if(NOT LIBOBS_DLL)
+            get_filename_component(_libobs_lib_name "${LIBOBS_LIB}" NAME_WE)
+            get_filename_component(_libobs_lib_dir "${LIBOBS_LIB}" DIRECTORY)
+            set(LIBOBS_DLL "${_libobs_lib_dir}/${_libobs_lib_name}.dll")
+        endif()
+        set_target_properties(OBS::libobs PROPERTIES
+            IMPORTED_IMPLIB "${LIBOBS_LIB}"
+            IMPORTED_LOCATION "${LIBOBS_DLL}"
+            INTERFACE_INCLUDE_DIRECTORIES "${LIBOBS_INCLUDE_DIR};${LIBOBS_CONFIG_INCLUDE_DIR}")
+    else()
+        set_target_properties(OBS::libobs PROPERTIES
+            IMPORTED_LOCATION "${LIBOBS_LIB}"
+            INTERFACE_INCLUDE_DIRECTORIES "${LIBOBS_INCLUDE_DIR};${LIBOBS_CONFIG_INCLUDE_DIR}")
+    endif()
 endif()
 
 # --- Freetype2 (cross-platform text rasterization) ----------------------
