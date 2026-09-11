@@ -3,3 +3,4 @@ project(obs-plugins)
 
 # Each subdirectory under plugins/ is an independent OBS Studio plugin module.
 add_subdirectory(plugins/obs-datetime-source)
+add_subdirectory(plugins/obs-ltc-source)

@@ -34,6 +34,37 @@ into an actual `.ttf`/`.otf` file) currently uses:
   `src/font-resolver.cpp`); proper DirectWrite / CoreText family resolution is not yet
   implemented
 
+### obs-ltc-source
+
+Adds an **"LTC Timecode Source"** that decodes [Linear Timecode](https://en.wikipedia.org/wiki/Linear_timecode)
+from the audio of another OBS source (e.g. a capture card feed, a media file, or a
+mic input carrying an LTC signal) and renders it on the canvas as `HH:MM:SS:FF`.
+
+Properties:
+
+- **Audio Source** — pick any existing OBS source that produces audio; the plugin
+  attaches an audio-capture callback to it and feeds the raw samples to
+  [libltc](https://github.com/x42/libltc) for decoding
+- **Display Style** — `Segmented (Classic LED Clock)` (default) or `Plain Text`
+- **Segmented style**:
+  - **Segment Color (Lit)** / **Segment Color (Unlit)** — with alpha; unlit segments
+    are drawn dim by default (like a real LED/LCD display showing its unpowered
+    segments), toggle off with **Show Unlit Segments**
+  - **Digit Height** and **Segment Thickness** — size and boldness of the digits
+- **Plain Text style**: **Font** (family, size, bold/italic) and **Text Color**
+- **Show Background** / **Background Color** — optional solid background plate behind
+  the text (applies to both styles)
+
+Digits are drawn as genuine seven-segment shapes (solid rectangles composited
+directly into the texture, no font involved) with a colon dot-pair between each
+`HH`/`MM`/`SS`/`FF` group. If no valid LTC signal has been decoded in the last second
+(source not selected, silent, or not actually carrying LTC), the display falls back
+to `--:--:--:--`, rendered as flat segment dashes in the segmented style.
+
+libltc is vendored directly under `plugins/obs-ltc-source/third_party/libltc/`
+(LGPL-3.0-or-later, see `COPYING.libltc` there) rather than requiring a system
+package, so the build doesn't depend on `libltc-dev` being installed.
+
 ## Building
 
 These plugins link against `libobs` and are built as out-of-tree OBS Studio plugin
@@ -69,14 +100,18 @@ cp build/plugins/obs-datetime-source/obs-datetime-source.so ~/.config/obs-studio
 cp -r plugins/obs-datetime-source/data ~/.config/obs-studio/plugins/obs-datetime-source/
 ```
 
-Restart OBS Studio, then add the source via **Sources → + → Date/Time Text**.
+Restart OBS Studio, then add the source via **Sources → + → Date/Time Text** (or
+**→ LTC Timecode Source** for `obs-ltc-source`, substituting its own module/data
+paths above).
 
 ## Status
 
-Work in progress — written against the documented libobs source plugin API, but not
-yet compiled/tested against a live OBS Studio build in this environment. Please file
-an issue (or just try it and report back) if something doesn't build or behave as
-expected.
+Work in progress — written against the documented libobs source plugin API. Both
+plugins build cleanly against a headless `libobs` and (for obs-ltc-source) the core
+LTC encode/decode round-trip has been verified standalone, but neither has been
+exercised inside a live, fully-installed OBS Studio app in this environment (none is
+installed here). Please file an issue (or just try it and report back) if something
+doesn't build or behave as expected.
 
 ## License
 
