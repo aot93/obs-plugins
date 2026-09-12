@@ -90,19 +90,122 @@ If OBS Studio was installed system-wide via `cmake --install` (which exports a
 `libobs` CMake package), you can omit `-DLIBOBS_INCLUDE_DIR` / `-DLIBOBS_LIB` and
 `find_package(libobs)` will locate it automatically.
 
+The one command above builds **both** plugins — the root `CMakeLists.txt`
+`add_subdirectory()`s every plugin.
+
+### Building on Windows
+
+You don't need the full OBS Studio UI to get `libobs` headers/lib to link
+against — build a headless `libobs` only, then build this repo against it.
+
+1. **Install tools** (PowerShell):
+
+   ```powershell
+   winget install --id Git.Git -e
+   winget install --id Kitware.CMake -e
+   winget install --id Microsoft.VisualStudio.2022.Community -e `
+       --override "--add Microsoft.VisualStudio.Workload.NativeDesktop --includeRecommended"
+   ```
+
+   Fully close and reopen the terminal afterwards so `PATH` picks up the new
+   installs — a stale `PATH` in an already-open shell is the most common
+   cause of "command not found" here.
+
+2. **Build a headless `libobs`.** Check what OBS Studio version you have
+   installed (Help → About) and check out the matching tag if possible, to
+   minimize ABI drift risk:
+
+   ```powershell
+   git clone --recursive https://github.com/obsproject/obs-studio.git C:\obs-studio
+   cd C:\obs-studio
+   git checkout <tag, e.g. 32.2.2>
+   cmake -B build_x64 -G "Visual Studio 17 2022" -A x64 `
+       -DENABLE_FRONTEND=OFF -DENABLE_BROWSER=OFF `
+       -DENABLE_SCRIPTING=OFF -DENABLE_PLUGINS=OFF
+   cmake --build build_x64 --config RelWithDebInfo
+   ```
+
+   Don't pass `-DCMAKE_TOOLCHAIN_FILE=vcpkg` to *this* configure step —
+   obs-studio's own CMake auto-bootstraps prebuilt deps on Windows, and a
+   vcpkg toolchain file can interfere with that. If `-DENABLE_FRONTEND=OFF`
+   is rejected by your checkout, try `-DENABLE_UI=OFF` instead (it's been
+   renamed across versions). `cmake --build ... --target obs` will fail with
+   `MSB1009` — omit `--target` and just build the default target.
+
+   This produces `C:\obs-studio\build_x64\libobs\RelWithDebInfo\obs.lib`
+   (+ `obs.dll`) and `C:\obs-studio\build_x64\config\obsconfig.h`.
+
+3. **Get FreeType via vcpkg** (prefer the static triplet, so you don't have
+   to chase and copy transitive runtime DLLs like zlib/libpng/bzip2 next to
+   the plugin at install time):
+
+   ```powershell
+   git clone https://github.com/microsoft/vcpkg C:\vcpkg
+   C:\vcpkg\bootstrap-vcpkg.bat
+   C:\vcpkg\vcpkg install freetype:x64-windows-static
+   ```
+
+   (`libltc` doesn't need vcpkg — it's vendored as source directly in
+   `plugins/obs-ltc-source/third_party/libltc/` and builds as part of this
+   repo's own CMake. Fontconfig is Linux-only and is skipped automatically
+   on Windows; font family lookup falls back to a couple of hardcoded system
+   font paths there, see `src/font-resolver.cpp`.)
+
+4. **Configure and build this repo**, from a `obs-plugins` checkout:
+
+   ```powershell
+   cmake -B build -G "Visual Studio 17 2022" -A x64 `
+       -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
+       -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+       -DLIBOBS_INCLUDE_DIR=C:\obs-studio\libobs `
+       -DLIBOBS_LIB=C:\obs-studio\build_x64\libobs\RelWithDebInfo\obs.lib `
+       -DLIBOBS_CONFIG_INCLUDE_DIR=C:\obs-studio\build_x64\config
+   cmake --build build --config RelWithDebInfo
+   ```
+
+   This produces both:
+
+   ```
+   build\plugins\obs-datetime-source\RelWithDebInfo\obs-datetime-source.dll
+   build\plugins\obs-ltc-source\RelWithDebInfo\obs-ltc-source.dll
+   ```
+
+   A `LNK4098` "defaultlib 'LIBCMT' conflicts" warning (dynamic-CRT plugin +
+   static-CRT FreeType) is expected and safe to ignore here — the plugin
+   only crosses the module boundary through OBS's own API (opaque pointers,
+   `bmalloc`/`bfree`), not raw CRT allocations.
+
 ## Installing
 
-Copy the built module and its `data/` directory into your OBS Studio plugins
-directory, e.g. on Linux:
+Copy each built module and its `data/` directory into your OBS Studio
+plugins directory.
+
+**Linux:**
 
 ```sh
 cp build/plugins/obs-datetime-source/obs-datetime-source.so ~/.config/obs-studio/plugins/obs-datetime-source/bin/64bit/
 cp -r plugins/obs-datetime-source/data ~/.config/obs-studio/plugins/obs-datetime-source/
 ```
 
-Restart OBS Studio, then add the source via **Sources → + → Date/Time Text** (or
-**→ LTC Timecode Source** for `obs-ltc-source`, substituting its own module/data
-paths above).
+**Windows — note this is `%ProgramData%`, *not* `%APPDATA%`.** OBS's
+third-party plugin scan on Windows uses `%ProgramData%\obs-studio\plugins`;
+a plugin dropped under `%APPDATA%\obs-studio\plugins` (the Linux/macOS-style
+path) is silently never scanned — no error, no log line.
+
+```powershell
+$plugin = "obs-ltc-source"   # or obs-datetime-source
+$pluginDir = "$env:ProgramData\obs-studio\plugins\$plugin"
+New-Item -ItemType Directory -Force -Path "$pluginDir\bin\64bit" | Out-Null
+New-Item -ItemType Directory -Force -Path "$pluginDir\data" | Out-Null
+Copy-Item "build\plugins\$plugin\RelWithDebInfo\$plugin.dll" "$pluginDir\bin\64bit\"
+Copy-Item -Recurse -Force "plugins\$plugin\data\*" "$pluginDir\data\"
+```
+
+Fully quit and relaunch OBS Studio (both platforms), then add the source via
+**Sources → + → Date/Time Text** or **→ LTC Timecode Source**. If it's
+missing from that list, check Help → Log Files → View Current Log for the
+plugin's filename or an `obs_module_load` line — no mention at all almost
+always means "wrong install path", not a build problem.
 
 ## Status
 
