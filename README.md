@@ -192,6 +192,17 @@ against — build a headless `libobs` only, then build this repo against it.
 Copy each built module and its `data/` directory into your OBS Studio
 plugins directory.
 
+**Windows users who don't want to build from source:** grab the latest zip
+from [Releases](https://github.com/aot93/obs-plugins/releases) — it's laid
+out to match the target directory structure exactly, so installing is just:
+
+```powershell
+Expand-Archive path\to\obs-plugins-windows-<version>.zip -DestinationPath "$env:ProgramData\obs-studio\plugins" -Force
+```
+
+Then fully quit and relaunch OBS Studio. Skip straight to that step; the rest
+of this section is for building from source yourself.
+
 **Linux:**
 
 ```sh
