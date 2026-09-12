@@ -62,6 +62,13 @@ Properties:
   - **Wait Before Stopping (seconds)** — once recording, how long the timecode must be
     frozen or absent before recording is stopped, to ride through a brief signal
     dropout or dropped LTC frame without prematurely cutting the recording
+  - **Ignore Timecode Ranges** — comma-separated `HH:MM:SS:FF-HH:MM:SS:FF` windows
+    (both ends inclusive) where the trigger must never fire, e.g.
+    `22:00:00:00-23:00:00:00, 23:30:00:00-23:45:00:00` to skip a pre-show slate or
+    test sequence. While the current timecode falls inside one of these ranges it's
+    treated like a lost/frozen signal: it can't start a new recording, and a
+    recording already running winds down on the normal "Wait Before Stopping"
+    schedule instead of continuing
   - Recording is controlled via `obs-frontend-api`, resolved dynamically at runtime
     (see `src/frontend-recording.cpp`) rather than linked at build time — this feature
     only works when the plugin is actually running inside a full OBS Studio

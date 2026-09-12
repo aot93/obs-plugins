@@ -11,6 +11,15 @@ extern "C" {
 
 #include <mutex>
 #include <string>
+#include <vector>
+
+// A closed [start, end] timecode range (inclusive on both ends) within which
+// the auto-record start/stop trigger should be suppressed, e.g. a pre-show
+// slate or test sequence that carries LTC but must never be auto-recorded.
+struct ltc_ignore_range {
+	int start[4]; // hours, mins, secs, frame
+	int end[4];
+};
 
 enum class ltc_display_style {
 	PLAIN_TEXT = 0,
@@ -46,6 +55,8 @@ struct ltc_source {
 	bool auto_record_enabled = false;
 	int record_start_min_frames = 5;    // consecutive advancing frames required before starting
 	float record_stop_wait_seconds = 2.0f; // grace period after TC stops advancing before stopping
+	std::string ignore_ranges_text;
+	std::vector<ltc_ignore_range> ignore_ranges; // parsed from ignore_ranges_text
 
 	// auto-record runtime state (touched only from video_tick)
 	bool prev_decoded_valid = false;

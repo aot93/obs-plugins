@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <tuple>
 #include <vector>
 
 // ---------------------------------------------------------------------
@@ -440,6 +441,78 @@ static void render_segmented_to_texture(ltc_source *ls, const std::string &text)
 }
 
 // ---------------------------------------------------------------------
+// Ignore ranges: user-specified timecode windows (e.g. pre-show slate, test
+// sequences) within which the auto-record trigger must never fire, even
+// though the incoming LTC is advancing normally.
+//
+// Text format: comma-separated "HH:MM:SS:FF-HH:MM:SS:FF" pairs, e.g.
+// "22:00:00:00-23:00:00:00, 23:30:00:00-23:45:00:00". Both ends inclusive.
+// ---------------------------------------------------------------------
+
+static std::string trim(const std::string &s)
+{
+	size_t a = s.find_first_not_of(" \t\r\n");
+	if (a == std::string::npos)
+		return "";
+	size_t b = s.find_last_not_of(" \t\r\n");
+	return s.substr(a, b - a + 1);
+}
+
+static bool parse_timecode_token(const std::string &token, int out[4])
+{
+	int h, m, s, f;
+	if (sscanf(token.c_str(), "%d:%d:%d:%d", &h, &m, &s, &f) != 4)
+		return false;
+	out[0] = h;
+	out[1] = m;
+	out[2] = s;
+	out[3] = f;
+	return true;
+}
+
+static std::vector<ltc_ignore_range> parse_ignore_ranges(const std::string &text)
+{
+	std::vector<ltc_ignore_range> ranges;
+
+	size_t pos = 0;
+	while (pos <= text.size()) {
+		size_t comma = text.find(',', pos);
+		std::string part = trim(text.substr(pos, comma == std::string::npos ? std::string::npos : comma - pos));
+		pos = (comma == std::string::npos) ? text.size() + 1 : comma + 1;
+		if (part.empty())
+			continue;
+
+		size_t dash = part.find('-');
+		ltc_ignore_range r;
+		if (dash == std::string::npos || !parse_timecode_token(trim(part.substr(0, dash)), r.start) ||
+		    !parse_timecode_token(trim(part.substr(dash + 1)), r.end)) {
+			blog(LOG_WARNING, "[obs-ltc-source] ignoring malformed ignore-range entry: '%s'", part.c_str());
+			continue;
+		}
+		ranges.push_back(r);
+	}
+
+	return ranges;
+}
+
+static bool tc_in_ignore_range(const SMPTETimecode &tc, const ltc_ignore_range &r)
+{
+	auto key = std::tie(tc.hours, tc.mins, tc.secs, tc.frame);
+	auto start = std::tie(r.start[0], r.start[1], r.start[2], r.start[3]);
+	auto end = std::tie(r.end[0], r.end[1], r.end[2], r.end[3]);
+	return !(key < start) && !(end < key);
+}
+
+static bool is_ignored_timecode(const ltc_source *ls, const SMPTETimecode &tc)
+{
+	for (const auto &r : ls->ignore_ranges) {
+		if (tc_in_ignore_range(tc, r))
+			return true;
+	}
+	return false;
+}
+
+// ---------------------------------------------------------------------
 // Automatic recording start/stop, driven by whether the incoming timecode
 // is actively advancing.
 //
@@ -450,6 +523,13 @@ static void render_segmented_to_texture(ltc_source *ls, const std::string &text)
 // been either lost entirely or frozen on the same value for
 // `record_stop_wait_seconds` -- this guards against a momentary signal
 // glitch or dropped LTC frame prematurely stopping the recording.
+//
+// While the current timecode falls within a user-configured ignore range,
+// neither the advance streak nor the "stopped since" timer are allowed to
+// keep recording going: it's treated exactly like a lost/frozen signal, so
+// a pre-show slate or test sequence can never trigger (or extend) a
+// recording, and any recording already running when an ignore range is
+// entered winds down on the normal stop-wait schedule.
 // ---------------------------------------------------------------------
 
 static void update_auto_record(ltc_source *ls, bool stale, bool has_tc, const SMPTETimecode &tc, uint64_t decode_time)
@@ -461,10 +541,11 @@ static void update_auto_record(ltc_source *ls, bool stale, bool has_tc, const SM
 		bool advanced = ls->prev_decoded_valid &&
 				(tc.hours != ls->prev_decoded_tc.hours || tc.mins != ls->prev_decoded_tc.mins ||
 				 tc.secs != ls->prev_decoded_tc.secs || tc.frame != ls->prev_decoded_tc.frame);
+		bool ignored = is_ignored_timecode(ls, tc);
 		ls->prev_decoded_tc = tc;
 		ls->prev_decoded_valid = true;
 
-		if (advanced) {
+		if (advanced && !ignored) {
 			ls->advance_streak++;
 			ls->stopped_since_ns = 0;
 			if (!ls->tc_running && ls->auto_record_enabled &&
@@ -474,13 +555,14 @@ static void update_auto_record(ltc_source *ls, bool stale, bool has_tc, const SM
 					ltc_frontend_recording_start();
 			}
 		} else {
-			// Same value as the previous decode: signal is present but not
-			// counting up (e.g. a paused deck still transmitting LTC).
+			// Same value as the previous decode (e.g. a paused deck still
+			// transmitting LTC), or inside a user-configured ignore range.
 			ls->advance_streak = 0;
 		}
 	}
 
-	bool not_advancing = stale || ls->advance_streak == 0;
+	bool currently_ignored = ls->prev_decoded_valid && is_ignored_timecode(ls, ls->prev_decoded_tc);
+	bool not_advancing = stale || ls->advance_streak == 0 || currently_ignored;
 	if (!not_advancing) {
 		ls->stopped_since_ns = 0;
 	} else if (ls->tc_running) {
@@ -555,6 +637,8 @@ static void ltc_source_update(void *data, obs_data_t *settings)
 	ls->record_stop_wait_seconds = (float)obs_data_get_double(settings, "record_stop_wait_seconds");
 	if (ls->record_stop_wait_seconds < 0.0f)
 		ls->record_stop_wait_seconds = 0.0f;
+	ls->ignore_ranges_text = obs_data_get_string(settings, "ignore_ranges");
+	ls->ignore_ranges = parse_ignore_ranges(ls->ignore_ranges_text);
 
 	obs_data_t *font_obj = obs_data_get_obj(settings, "font");
 	if (font_obj) {
@@ -593,6 +677,7 @@ static void ltc_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_bool(settings, "auto_record_enabled", false);
 	obs_data_set_default_int(settings, "record_start_min_frames", 5);
 	obs_data_set_default_double(settings, "record_stop_wait_seconds", 2.0);
+	obs_data_set_default_string(settings, "ignore_ranges", "");
 
 	obs_data_t *font_obj = obs_data_create();
 	obs_data_set_default_string(font_obj, "face", "Monospace");
@@ -624,6 +709,7 @@ static bool auto_record_modified(obs_properties_t *props, obs_property_t *proper
 	bool enabled = obs_data_get_bool(settings, "auto_record_enabled");
 	obs_property_set_visible(obs_properties_get(props, "record_start_min_frames"), enabled);
 	obs_property_set_visible(obs_properties_get(props, "record_stop_wait_seconds"), enabled);
+	obs_property_set_visible(obs_properties_get(props, "ignore_ranges"), enabled);
 	return true;
 }
 
@@ -664,6 +750,9 @@ static obs_properties_t *ltc_source_get_properties(void *data)
 				       1);
 	obs_properties_add_float_slider(props, "record_stop_wait_seconds", obs_module_text("RecordStopWaitSeconds"),
 					 0.0, 30.0, 0.5);
+	obs_property_t *ignore_ranges = obs_properties_add_text(props, "ignore_ranges",
+								  obs_module_text("IgnoreRanges"), OBS_TEXT_DEFAULT);
+	obs_property_set_long_description(ignore_ranges, obs_module_text("IgnoreRanges.Description"));
 
 	if (ls) {
 		bool segmented = ls->display_style == ltc_display_style::SEGMENTED;
@@ -677,6 +766,7 @@ static obs_properties_t *ltc_source_get_properties(void *data)
 
 		obs_property_set_visible(obs_properties_get(props, "record_start_min_frames"), ls->auto_record_enabled);
 		obs_property_set_visible(obs_properties_get(props, "record_stop_wait_seconds"), ls->auto_record_enabled);
+		obs_property_set_visible(obs_properties_get(props, "ignore_ranges"), ls->auto_record_enabled);
 	}
 
 	return props;
