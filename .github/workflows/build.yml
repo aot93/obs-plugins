@@ -46,7 +46,9 @@ jobs:
           sudo apt-get install -y ninja-build extra-cmake-modules uthash-dev \
             libjansson-dev libxkbcommon-dev libgl1-mesa-dev libglvnd-dev \
             libdrm-dev libsimde-dev libfreetype-dev libfontconfig-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev \
+            uuid-dev libx11-dev libx11-xcb-dev libxcb1-dev libxcb-xinput-dev \
+            libpulse-dev libwayland-dev
 
       - name: Install macOS build dependencies
         if: matrix.platform == 'macos'
@@ -76,7 +78,14 @@ jobs:
           # project below, which has no such restriction and still uses
           # Ninja. Xcode is a multi-config generator, so the output lands
           # under a RelWithDebInfo/ subdirectory, same shape as MSVC.
+          # This specific obs-studio tag uses some CoreVideo/Metal APIs that the
+          # runner's current Xcode/SDK flags as deprecated; obs-studio defaults
+          # CMAKE_COMPILE_WARNING_AS_ERROR to ON (only if the caller hasn't set
+          # it), which turns that into a hard failure for a dependency we don't
+          # control the source of. Predefining it OFF here overrides that
+          # default without touching our own plugin code's warning settings.
           cmake -B obs-studio/build -G Xcode -S obs-studio \
+            -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF \
             -DENABLE_FRONTEND=OFF -DENABLE_BROWSER=OFF \
             -DENABLE_SCRIPTING=OFF -DENABLE_PLUGINS=OFF
           cmake --build obs-studio/build --config RelWithDebInfo --parallel "$(sysctl -n hw.ncpu)"
