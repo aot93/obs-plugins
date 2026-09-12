@@ -24,7 +24,7 @@ jobs:
             platform: linux
           - os: macos-latest
             platform: macos
-          - os: windows-latest
+          - os: windows-2022
             platform: windows
     runs-on: ${{ matrix.os }}
     steps:
@@ -45,7 +45,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ninja-build extra-cmake-modules uthash-dev \
             libjansson-dev libxkbcommon-dev libgl1-mesa-dev libglvnd-dev \
-            libdrm-dev libsimde-dev libfreetype-dev libfontconfig-dev
+            libdrm-dev libsimde-dev libfreetype-dev libfontconfig-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev
 
       - name: Install macOS build dependencies
         if: matrix.platform == 'macos'
@@ -70,11 +71,15 @@ jobs:
       - name: Build headless libobs (macOS)
         if: matrix.platform == 'macos'
         run: |
-          cmake -B obs-studio/build -G Ninja -S obs-studio \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+          # obs-studio's own CMake refuses any generator but Xcode on macOS
+          # (cmake/macos/compilerconfig.cmake) -- unlike our own plugin
+          # project below, which has no such restriction and still uses
+          # Ninja. Xcode is a multi-config generator, so the output lands
+          # under a RelWithDebInfo/ subdirectory, same shape as MSVC.
+          cmake -B obs-studio/build -G Xcode -S obs-studio \
             -DENABLE_FRONTEND=OFF -DENABLE_BROWSER=OFF \
             -DENABLE_SCRIPTING=OFF -DENABLE_PLUGINS=OFF
-          cmake --build obs-studio/build -j "$(sysctl -n hw.ncpu)"
+          cmake --build obs-studio/build --config RelWithDebInfo --parallel "$(sysctl -n hw.ncpu)"
 
       - name: Build headless libobs (Windows)
         if: matrix.platform == 'windows'
@@ -99,8 +104,9 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}/obs-studio/libobs" \
-            -DLIBOBS_LIB="${{ github.workspace }}/obs-studio/build/libobs/libobs.dylib"
-          cmake --build build -j "$(sysctl -n hw.ncpu)"
+            -DLIBOBS_LIB="${{ github.workspace }}/obs-studio/build/libobs/RelWithDebInfo/libobs.dylib" \
+            -DLIBOBS_CONFIG_INCLUDE_DIR="${{ github.workspace }}/obs-studio/build/config"
+          cmake --build build --parallel "$(sysctl -n hw.ncpu)"
 
       - name: Configure and build plugins (Windows)
         if: matrix.platform == 'windows'
