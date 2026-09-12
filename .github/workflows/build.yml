@@ -110,10 +110,13 @@ jobs:
       - name: Configure and build plugins (macOS)
         if: matrix.platform == 'macos'
         run: |
+          # On macOS, obs-studio builds libobs as a .framework bundle, not a
+          # flat .dylib -- the actual Mach-O binary lives inside it at this
+          # versioned-symlink path.
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
             -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}/obs-studio/libobs" \
-            -DLIBOBS_LIB="${{ github.workspace }}/obs-studio/build/libobs/RelWithDebInfo/libobs.dylib" \
+            -DLIBOBS_LIB="${{ github.workspace }}/obs-studio/build/libobs/RelWithDebInfo/libobs.framework/Versions/Current/libobs" \
             -DLIBOBS_CONFIG_INCLUDE_DIR="${{ github.workspace }}/obs-studio/build/config"
           cmake --build build --parallel "$(sysctl -n hw.ncpu)"
 
