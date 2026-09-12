@@ -1,5 +1,6 @@
 #include "ltc-source.h"
 #include "font-resolver.h"
+#include "frontend-recording.h"
 
 #include <util/platform.h>
 
@@ -439,6 +440,66 @@ static void render_segmented_to_texture(ltc_source *ls, const std::string &text)
 }
 
 // ---------------------------------------------------------------------
+// Automatic recording start/stop, driven by whether the incoming timecode
+// is actively advancing.
+//
+// "Running" latches only after `record_start_min_frames` consecutive
+// decoded frames each differ from the previous one -- this guards against a
+// handful of garbled/spurious decodes from a noisy signal falsely
+// triggering a start. Once latched, a stop only fires after the signal has
+// been either lost entirely or frozen on the same value for
+// `record_stop_wait_seconds` -- this guards against a momentary signal
+// glitch or dropped LTC frame prematurely stopping the recording.
+// ---------------------------------------------------------------------
+
+static void update_auto_record(ltc_source *ls, bool stale, bool has_tc, const SMPTETimecode &tc, uint64_t decode_time)
+{
+	bool new_decode = has_tc && decode_time != ls->last_processed_decode_time_ns;
+	if (new_decode) {
+		ls->last_processed_decode_time_ns = decode_time;
+
+		bool advanced = ls->prev_decoded_valid &&
+				(tc.hours != ls->prev_decoded_tc.hours || tc.mins != ls->prev_decoded_tc.mins ||
+				 tc.secs != ls->prev_decoded_tc.secs || tc.frame != ls->prev_decoded_tc.frame);
+		ls->prev_decoded_tc = tc;
+		ls->prev_decoded_valid = true;
+
+		if (advanced) {
+			ls->advance_streak++;
+			ls->stopped_since_ns = 0;
+			if (!ls->tc_running && ls->auto_record_enabled &&
+			    ls->advance_streak >= std::max(1, ls->record_start_min_frames)) {
+				ls->tc_running = true;
+				if (!ltc_frontend_recording_active())
+					ltc_frontend_recording_start();
+			}
+		} else {
+			// Same value as the previous decode: signal is present but not
+			// counting up (e.g. a paused deck still transmitting LTC).
+			ls->advance_streak = 0;
+		}
+	}
+
+	bool not_advancing = stale || ls->advance_streak == 0;
+	if (!not_advancing) {
+		ls->stopped_since_ns = 0;
+	} else if (ls->tc_running) {
+		uint64_t now = os_gettime_ns();
+		if (ls->stopped_since_ns == 0) {
+			ls->stopped_since_ns = now;
+		} else {
+			uint64_t wait_ns = (uint64_t)(std::max(0.0f, ls->record_stop_wait_seconds) * 1000000000.0);
+			if (now - ls->stopped_since_ns >= wait_ns) {
+				ls->tc_running = false;
+				ls->stopped_since_ns = 0;
+				if (ls->auto_record_enabled && ltc_frontend_recording_active())
+					ltc_frontend_recording_stop();
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------
 // obs_source_info callbacks
 // ---------------------------------------------------------------------
 
@@ -487,6 +548,14 @@ static void ltc_source_update(void *data, obs_data_t *settings)
 	if (ls->segment_thickness <= 0.0f || ls->segment_thickness > 0.5f)
 		ls->segment_thickness = 0.20f;
 
+	ls->auto_record_enabled = obs_data_get_bool(settings, "auto_record_enabled");
+	ls->record_start_min_frames = (int)obs_data_get_int(settings, "record_start_min_frames");
+	if (ls->record_start_min_frames < 1)
+		ls->record_start_min_frames = 1;
+	ls->record_stop_wait_seconds = (float)obs_data_get_double(settings, "record_stop_wait_seconds");
+	if (ls->record_stop_wait_seconds < 0.0f)
+		ls->record_stop_wait_seconds = 0.0f;
+
 	obs_data_t *font_obj = obs_data_get_obj(settings, "font");
 	if (font_obj) {
 		ls->font_face = obs_data_get_string(font_obj, "face");
@@ -521,6 +590,10 @@ static void ltc_source_get_defaults(obs_data_t *settings)
 	obs_data_set_default_int(settings, "digit_height", 96);
 	obs_data_set_default_double(settings, "segment_thickness", 0.20);
 
+	obs_data_set_default_bool(settings, "auto_record_enabled", false);
+	obs_data_set_default_int(settings, "record_start_min_frames", 5);
+	obs_data_set_default_double(settings, "record_stop_wait_seconds", 2.0);
+
 	obs_data_t *font_obj = obs_data_create();
 	obs_data_set_default_string(font_obj, "face", "Monospace");
 	obs_data_set_default_int(font_obj, "size", 96);
@@ -542,6 +615,15 @@ static bool style_modified(obs_properties_t *props, obs_property_t *property, ob
 	obs_property_set_visible(obs_properties_get(props, "segment_off_color"), segmented);
 	obs_property_set_visible(obs_properties_get(props, "digit_height"), segmented);
 	obs_property_set_visible(obs_properties_get(props, "segment_thickness"), segmented);
+	return true;
+}
+
+static bool auto_record_modified(obs_properties_t *props, obs_property_t *property, obs_data_t *settings)
+{
+	UNUSED_PARAMETER(property);
+	bool enabled = obs_data_get_bool(settings, "auto_record_enabled");
+	obs_property_set_visible(obs_properties_get(props, "record_start_min_frames"), enabled);
+	obs_property_set_visible(obs_properties_get(props, "record_stop_wait_seconds"), enabled);
 	return true;
 }
 
@@ -575,6 +657,14 @@ static obs_properties_t *ltc_source_get_properties(void *data)
 	obs_properties_add_bool(props, "background_enabled", obs_module_text("BackgroundEnabled"));
 	obs_properties_add_color_alpha(props, "background_color", obs_module_text("BackgroundColor"));
 
+	obs_property_t *auto_record = obs_properties_add_bool(props, "auto_record_enabled",
+								obs_module_text("AutoRecordEnabled"));
+	obs_property_set_modified_callback(auto_record, auto_record_modified);
+	obs_properties_add_int_slider(props, "record_start_min_frames", obs_module_text("RecordStartMinFrames"), 1, 60,
+				       1);
+	obs_properties_add_float_slider(props, "record_stop_wait_seconds", obs_module_text("RecordStopWaitSeconds"),
+					 0.0, 30.0, 0.5);
+
 	if (ls) {
 		bool segmented = ls->display_style == ltc_display_style::SEGMENTED;
 		obs_property_set_visible(obs_properties_get(props, "font"), !segmented);
@@ -584,6 +674,9 @@ static obs_properties_t *ltc_source_get_properties(void *data)
 		obs_property_set_visible(obs_properties_get(props, "segment_off_color"), segmented);
 		obs_property_set_visible(obs_properties_get(props, "digit_height"), segmented);
 		obs_property_set_visible(obs_properties_get(props, "segment_thickness"), segmented);
+
+		obs_property_set_visible(obs_properties_get(props, "record_start_min_frames"), ls->auto_record_enabled);
+		obs_property_set_visible(obs_properties_get(props, "record_stop_wait_seconds"), ls->auto_record_enabled);
 	}
 
 	return props;
@@ -653,6 +746,8 @@ static void ltc_source_video_tick(void *data, float seconds)
 	// a second, so a disconnected/silent source doesn't freeze on stale text.
 	const uint64_t timeout_ns = 1000000000ULL;
 	bool stale = !has_tc || (os_gettime_ns() - decode_time) > timeout_ns;
+
+	update_auto_record(ls, stale, has_tc, tc, decode_time);
 
 	std::string text;
 	if (stale) {

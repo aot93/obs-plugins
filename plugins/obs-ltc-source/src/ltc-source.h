@@ -42,6 +42,19 @@ struct ltc_source {
 	bool background_enabled = false;
 	uint32_t background_color = 0xFF000000;
 
+	// automatic recording start/stop driven by the incoming timecode
+	bool auto_record_enabled = false;
+	int record_start_min_frames = 5;    // consecutive advancing frames required before starting
+	float record_stop_wait_seconds = 2.0f; // grace period after TC stops advancing before stopping
+
+	// auto-record runtime state (touched only from video_tick)
+	bool prev_decoded_valid = false;
+	SMPTETimecode prev_decoded_tc{};
+	uint64_t last_processed_decode_time_ns = 0;
+	int advance_streak = 0;
+	bool tc_running = false;
+	uint64_t stopped_since_ns = 0;
+
 	// audio source we're attached to (strong ref held while attached; see
 	// attach_audio_source/detach_audio_source in ltc-source.cpp)
 	obs_source_t *audio_source = nullptr;

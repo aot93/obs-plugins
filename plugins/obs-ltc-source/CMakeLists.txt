@@ -87,9 +87,18 @@ add_library(obs-ltc-source MODULE
     src/ltc-source.h
     src/font-resolver.cpp
     src/font-resolver.h
+    src/frontend-recording.cpp
+    src/frontend-recording.h
 )
 
 target_link_libraries(obs-ltc-source PRIVATE OBS::libobs Freetype::Freetype ltc_vendored)
+
+if(UNIX)
+    # frontend-recording.cpp resolves obs-frontend-api symbols at runtime via
+    # dlopen()/dlsym() rather than linking against it at build time (see that
+    # file for why).
+    target_link_libraries(obs-ltc-source PRIVATE ${CMAKE_DL_LIBS})
+endif()
 
 if(UNIX AND NOT APPLE)
     target_include_directories(obs-ltc-source PRIVATE ${FONTCONFIG_INCLUDE_DIRS})

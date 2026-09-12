@@ -54,6 +54,18 @@ Properties:
 - **Plain Text style**: **Font** (family, size, bold/italic) and **Text Color**
 - **Show Background** / **Background Color** — optional solid background plate behind
   the text (applies to both styles)
+- **Auto Start/Stop Recording with Timecode** — when enabled, drives OBS's recording
+  start/stop directly from the incoming timecode:
+  - **Min. Consecutive Frames to Start** — the timecode must be seen advancing for this
+    many consecutive decoded frames before recording is started, to guard against a
+    handful of garbled/spurious decodes (e.g. signal noise) falsely triggering a start
+  - **Wait Before Stopping (seconds)** — once recording, how long the timecode must be
+    frozen or absent before recording is stopped, to ride through a brief signal
+    dropout or dropped LTC frame without prematurely cutting the recording
+  - Recording is controlled via `obs-frontend-api`, resolved dynamically at runtime
+    (see `src/frontend-recording.cpp`) rather than linked at build time — this feature
+    only works when the plugin is actually running inside a full OBS Studio
+    application, not a headless `libobs`-only host
 
 Digits are drawn as genuine seven-segment shapes (solid rectangles composited
 directly into the texture, no font involved) with a colon dot-pair between each
