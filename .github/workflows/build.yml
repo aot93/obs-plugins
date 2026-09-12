@@ -1,0 +1,178 @@
+name: Build plugins
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+env:
+  # Pinned to the OBS Studio release these plugins were last verified
+  # against (see README) -- bump when moving to a newer target version.
+  OBS_STUDIO_TAG: "32.2.2"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: macos-latest
+            platform: macos
+          - os: windows-latest
+            platform: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout obs-plugins
+        uses: actions/checkout@v4
+
+      - name: Checkout obs-studio (for headless libobs)
+        uses: actions/checkout@v4
+        with:
+          repository: obsproject/obs-studio
+          ref: ${{ env.OBS_STUDIO_TAG }}
+          submodules: recursive
+          path: obs-studio
+
+      - name: Install Linux build dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build extra-cmake-modules uthash-dev \
+            libjansson-dev libxkbcommon-dev libgl1-mesa-dev libglvnd-dev \
+            libdrm-dev libsimde-dev libfreetype-dev libfontconfig-dev
+
+      - name: Install macOS build dependencies
+        if: matrix.platform == 'macos'
+        run: brew install ninja freetype simde
+
+      - name: Install vcpkg (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          git clone https://github.com/microsoft/vcpkg C:\vcpkg
+          C:\vcpkg\bootstrap-vcpkg.bat
+          C:\vcpkg\vcpkg install freetype:x64-windows-static
+
+      - name: Build headless libobs (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          cmake -B obs-studio/build -G Ninja -S obs-studio \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DENABLE_FRONTEND=OFF -DENABLE_BROWSER=OFF \
+            -DENABLE_SCRIPTING=OFF -DENABLE_PLUGINS=OFF
+          cmake --build obs-studio/build -j "$(nproc)"
+
+      - name: Build headless libobs (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          cmake -B obs-studio/build -G Ninja -S obs-studio \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DENABLE_FRONTEND=OFF -DENABLE_BROWSER=OFF \
+            -DENABLE_SCRIPTING=OFF -DENABLE_PLUGINS=OFF
+          cmake --build obs-studio/build -j "$(sysctl -n hw.ncpu)"
+
+      - name: Build headless libobs (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          cmake -B obs-studio/build_x64 -G "Visual Studio 17 2022" -A x64 -S obs-studio `
+            -DENABLE_FRONTEND=OFF -DENABLE_BROWSER=OFF `
+            -DENABLE_SCRIPTING=OFF -DENABLE_PLUGINS=OFF
+          cmake --build obs-studio/build_x64 --config RelWithDebInfo
+
+      - name: Configure and build plugins (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}/obs-studio/libobs" \
+            -DLIBOBS_LIB="${{ github.workspace }}/obs-studio/build/libobs/libobs.so"
+          cmake --build build -j "$(nproc)"
+
+      - name: Configure and build plugins (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}/obs-studio/libobs" \
+            -DLIBOBS_LIB="${{ github.workspace }}/obs-studio/build/libobs/libobs.dylib"
+          cmake --build build -j "$(sysctl -n hw.ncpu)"
+
+      - name: Configure and build plugins (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          cmake -B build -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static `
+            -DLIBOBS_INCLUDE_DIR="${{ github.workspace }}\obs-studio\libobs" `
+            -DLIBOBS_LIB="${{ github.workspace }}\obs-studio\build_x64\libobs\RelWithDebInfo\obs.lib" `
+            -DLIBOBS_CONFIG_INCLUDE_DIR="${{ github.workspace }}\obs-studio\build_x64\config"
+          cmake --build build --config RelWithDebInfo
+
+      - name: Package (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          set -eu
+          for plugin in obs-datetime-source obs-ltc-source; do
+            mkdir -p "dist/$plugin/bin/64bit"
+            cp "build/plugins/$plugin/$plugin.so" "dist/$plugin/bin/64bit/"
+            cp -r "plugins/$plugin/data" "dist/$plugin/data"
+          done
+          (cd dist && zip -r "../obs-plugins-linux.zip" .)
+
+      - name: Package (macOS)
+        if: matrix.platform == 'macos'
+        run: |
+          set -eu
+          for plugin in obs-datetime-source obs-ltc-source; do
+            built=$(find "build/plugins/$plugin" -maxdepth 1 -type f -name "$plugin*" ! -name "*.a" | head -n1)
+            mkdir -p "dist/$plugin.plugin/Contents/MacOS"
+            mkdir -p "dist/$plugin.plugin/Contents/Resources"
+            cp "$built" "dist/$plugin.plugin/Contents/MacOS/$plugin"
+            cp -r "plugins/$plugin/data/"* "dist/$plugin.plugin/Contents/Resources/"
+          done
+          (cd dist && zip -r "../obs-plugins-macos.zip" .)
+
+      - name: Package (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          foreach ($plugin in "obs-datetime-source", "obs-ltc-source") {
+            New-Item -ItemType Directory -Force -Path "dist\$plugin\bin\64bit" | Out-Null
+            Copy-Item "build\plugins\$plugin\RelWithDebInfo\$plugin.dll" "dist\$plugin\bin\64bit\"
+            Copy-Item -Recurse -Force "plugins\$plugin\data" "dist\$plugin\data"
+          }
+          Compress-Archive -Path dist\* -DestinationPath "obs-plugins-windows.zip"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: obs-plugins-${{ matrix.platform }}
+          path: obs-plugins-${{ matrix.platform }}.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Rename artifacts with version suffix
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME}"
+          mkdir -p release
+          mv "artifacts/obs-plugins-linux/obs-plugins-linux.zip" "release/obs-plugins-linux-${version}.zip"
+          mv "artifacts/obs-plugins-macos/obs-plugins-macos.zip" "release/obs-plugins-macos-${version}.zip"
+          mv "artifacts/obs-plugins-windows/obs-plugins-windows.zip" "release/obs-plugins-windows-${version}.zip"
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.zip

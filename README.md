@@ -199,16 +199,49 @@ against — build a headless `libobs` only, then build this repo against it.
 Copy each built module and its `data/` directory into your OBS Studio
 plugins directory.
 
-**Windows users who don't want to build from source:** grab the latest zip
-from [Releases](https://github.com/aot93/obs-plugins/releases) — it's laid
-out to match the target directory structure exactly, so installing is just:
+**Don't want to build from source?** Every [Release](https://github.com/aot93/obs-plugins/releases)
+has prebuilt zips for Windows, macOS, and Linux, built automatically by CI
+(see `.github/workflows/build.yml`) — each is laid out to match its
+platform's target directory structure exactly. Skip straight to the
+platform-specific extraction command below; the rest of this section is for
+building from source yourself.
+
+**Windows:**
 
 ```powershell
 Expand-Archive path\to\obs-plugins-windows-<version>.zip -DestinationPath "$env:ProgramData\obs-studio\plugins" -Force
 ```
 
-Then fully quit and relaunch OBS Studio. Skip straight to that step; the rest
-of this section is for building from source yourself.
+**macOS:**
+
+```sh
+unzip obs-plugins-macos-<version>.zip -d ~/Library/Application\ Support/obs-studio/plugins/
+xattr -cr ~/Library/Application\ Support/obs-studio/plugins/obs-datetime-source.plugin
+xattr -cr ~/Library/Application\ Support/obs-studio/plugins/obs-ltc-source.plugin
+```
+
+The `xattr -cr` step strips the quarantine flag macOS attaches to anything
+downloaded from a browser; without it, Gatekeeper blocks an unsigned,
+non-notarized plugin like this one from loading at all ("cannot be opened
+because it is from an unidentified developer"), with no mention in OBS's own
+log to explain why. **The macOS build is CI-verified to compile and package
+correctly, but has not been confirmed to actually load inside a real OBS
+Studio app** (no Mac was available to test on) — please file an issue if it
+doesn't show up under Sources → +.
+
+**Linux:**
+
+```sh
+unzip obs-plugins-linux-<version>.zip -d ~/.config/obs-studio/plugins/
+```
+
+Then fully quit and relaunch OBS Studio, and add the source via
+**Sources → + → Date/Time Text** or **→ LTC Timecode Source**. If it's
+missing from that list, check Help → Log Files → View Current Log for the
+plugin's filename or an `obs_module_load` line — no mention at all almost
+always means "wrong install path", not a build problem.
+
+### Installing your own build
 
 **Linux:**
 
@@ -231,7 +264,19 @@ Copy-Item "build\plugins\$plugin\RelWithDebInfo\$plugin.dll" "$pluginDir\bin\64b
 Copy-Item -Recurse -Force "plugins\$plugin\data\*" "$pluginDir\data\"
 ```
 
-Fully quit and relaunch OBS Studio (both platforms), then add the source via
+**macOS** — built as a `.plugin` bundle (a directory, not a flat file); the
+built module has no file extension inside `Contents/MacOS/`:
+
+```sh
+plugin="obs-ltc-source"   # or obs-datetime-source
+pluginDir="$HOME/Library/Application Support/obs-studio/plugins/$plugin.plugin"
+mkdir -p "$pluginDir/Contents/MacOS" "$pluginDir/Contents/Resources"
+cp "build/plugins/$plugin/$plugin.so" "$pluginDir/Contents/MacOS/$plugin"   # or .dylib, depending on your CMake/Xcode setup
+cp -r "plugins/$plugin/data/"* "$pluginDir/Contents/Resources/"
+xattr -cr "$pluginDir"
+```
+
+Fully quit and relaunch OBS Studio, then add the source via
 **Sources → + → Date/Time Text** or **→ LTC Timecode Source**. If it's
 missing from that list, check Help → Log Files → View Current Log for the
 plugin's filename or an `obs_module_load` line — no mention at all almost
