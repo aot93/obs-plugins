@@ -62,6 +62,22 @@ endif()
 # --- Freetype2 (cross-platform text rasterization) ----------------------
 find_package(Freetype REQUIRED)
 
+# --- SIMDe (libobs' public headers pull this in transitively, on
+# platforms without native x86 SSE intrinsics -- e.g. Apple Silicon; MSVC
+# on x86_64 Windows takes a native-intrinsics path instead and doesn't
+# need it) -----------------------------------------------------------
+# On Linux this typically resolves via a system path the compiler already
+# searches implicitly (e.g. apt's libsimde-dev under /usr/include); on
+# macOS, Homebrew's non-standard /opt/homebrew prefix is not searched
+# implicitly by Apple Clang, so it needs to be added explicitly.
+find_path(SIMDE_INCLUDE_DIR NAMES simde/x86/sse2.h)
+if(NOT SIMDE_INCLUDE_DIR AND NOT WIN32)
+    message(FATAL_ERROR
+        "SIMDe headers not found (required transitively by libobs' public "
+        "headers). Install it (e.g. 'brew install simde' or "
+        "'apt install libsimde-dev') or point CMAKE_PREFIX_PATH at it.")
+endif()
+
 # --- Fontconfig (Linux family/style -> font file resolution) ------------
 if(UNIX AND NOT APPLE)
     find_package(PkgConfig REQUIRED)
@@ -92,6 +108,9 @@ add_library(obs-ltc-source MODULE
 )
 
 target_link_libraries(obs-ltc-source PRIVATE OBS::libobs Freetype::Freetype ltc_vendored)
+if(SIMDE_INCLUDE_DIR)
+    target_include_directories(obs-ltc-source PRIVATE ${SIMDE_INCLUDE_DIR})
+endif()
 
 if(UNIX)
     # frontend-recording.cpp resolves obs-frontend-api symbols at runtime via
